@@ -95,6 +95,8 @@ extern crate shlex;
 extern crate tempdir;
 extern crate toml;
 extern crate toml_query;
+extern crate url;
+extern crate relative_path;
 
 #[cfg(test)]
 #[macro_use]

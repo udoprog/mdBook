@@ -41,15 +41,20 @@ impl HtmlHandlebars {
 
     fn render_item(
         &self,
-                   item: &BookItem,
-                   mut ctx: RenderItemContext,
+        src_dir: &Path,
+        item: &BookItem,
+        mut ctx: RenderItemContext,
         print_content: &mut String,
     ) -> Result<()> {
         // FIXME: This should be made DRY-er and rely less on mutable state
         match *item {
             BookItem::Chapter(ref ch) => {
+                let source_path = src_dir.join(&ch.path);
                 let content = ch.content.clone();
-                let content = utils::render_markdown(&content, ctx.html_config.curly_quotes);
+                let content = utils::render_markdown(
+                    &content, Some(&source_path), Path::is_file, ctx.html_config.curly_quotes
+                );
+
                 print_content.push_str(&content);
 
                 // Update the context with data for this file
@@ -314,7 +319,7 @@ impl Renderer for HtmlHandlebars {
                 is_index: i == 0,
                 html_config: html_config.clone(),
             };
-            self.render_item(item, ctx, &mut print_content)?;
+            self.render_item(&src_dir, item, ctx, &mut print_content)?;
         }
 
         // Print version
