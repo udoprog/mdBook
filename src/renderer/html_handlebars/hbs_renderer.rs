@@ -51,8 +51,20 @@ impl HtmlHandlebars {
             BookItem::Chapter(ref ch) => {
                 let source_path = src_dir.join(&ch.path);
                 let content = ch.content.clone();
+
+                let link_filter = if let Some(parent) = source_path.parent().map(ToOwned::to_owned) {
+                    // TODO: change this check to only look in the book for valid destinations.
+                    Some(utils::ChangeExtLinkFilter::new(
+                        move |path| path.to_path(&parent).is_file(), "md", "html",
+                    ))
+                } else {
+                    None
+                };
+
+                let link_filter = link_filter.as_ref().map(|l| l as &utils::LinkFilter);
+
                 let content = utils::render_markdown(
-                    &content, Some(&source_path), Path::is_file, ctx.html_config.curly_quotes
+                    &content, link_filter, ctx.html_config.curly_quotes
                 );
 
                 print_content.push_str(&content);
