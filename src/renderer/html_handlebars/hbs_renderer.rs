@@ -93,13 +93,8 @@ impl HtmlHandlebars {
                 }
 
                 let path_to_root = ch.path
-                    .relativize().components().skip(1).map(|_| "..").collect::<Vec<_>>();
-
-                let path_to_root = if path_to_root.is_empty() {
-                    ".".to_string()
-                } else {
-                    path_to_root.join("/")
-                };
+                    .relativize().components().skip(1).map(|_| "..").collect::<Vec<_>>()
+                    .join("/");
 
                 ctx.data.insert("path".to_owned(), json!(ch.path));
                 ctx.data.insert("content".to_owned(), json!(content));
@@ -251,7 +246,7 @@ impl HtmlHandlebars {
         data.insert("is_print".to_owned(), json!(true));
         data.insert("path".to_owned(), json!("print.md"));
         data.insert("content".to_owned(), json!(print_content));
-        data.insert("path_to_root".to_owned(), json!("."));
+        data.insert("path_to_root".to_owned(), json!(""));
     }
 
     fn register_hbs_helpers(&self, handlebars: &mut Handlebars, html_config: &HtmlConfig) {
