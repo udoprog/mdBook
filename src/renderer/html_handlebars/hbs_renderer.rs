@@ -13,8 +13,10 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use handlebars::Handlebars;
+use relative_path::RelativePath;
 
 use serde_json;
 
@@ -26,13 +28,13 @@ impl HtmlHandlebars {
         HtmlHandlebars
     }
 
-    fn write_file<P: AsRef<Path>>(
+    fn write_file<P: AsRef<RelativePath>>(
         &self,
         build_dir: &Path,
-        filename: P,
+        path: P,
         content: &[u8],
     ) -> Result<()> {
-        let path = build_dir.join(filename);
+        let path = path.as_ref().to_path(build_dir);
 
         utils::fs::create_file(&path)?
             .write_all(content)
@@ -41,41 +43,42 @@ impl HtmlHandlebars {
 
     fn render_item(
         &self,
-        src_dir: &Path,
         item: &BookItem,
+        targets: &HashSet<&RelativePath>,
         mut ctx: RenderItemContext,
         print_content: &mut String,
     ) -> Result<()> {
         // FIXME: This should be made DRY-er and rely less on mutable state
         match *item {
             BookItem::Chapter(ref ch) => {
-                let source_path = src_dir.join(&ch.path);
                 let content = ch.content.clone();
 
-                let link_filter = if let Some(parent) = source_path.parent().map(ToOwned::to_owned) {
-                    // TODO: change this check to only look in the book for valid destinations.
-                    Some(utils::ChangeExtLinkFilter::new(
-                        move |path| path.to_path(&parent).is_file(), "md", "html",
-                    ))
-                } else {
-                    None
-                };
+                let parent = ch.path.parent().unwrap_or(RelativePath::new("."));
 
-                let link_filter = link_filter.as_ref().map(|l| l as &utils::LinkFilter);
+                let link_filter = utils::ChangeExtLinkFilter::new(
+                    parent,
+                    move |dest| {
+                        let check = parent.relativize_with(dest);
+
+                        if !targets.contains(&check.as_relative_path()) {
+                            warn!("link to non-existent destination: {:?}", dest);
+                            return false;
+                        }
+
+                        true
+                    },
+                    "md",
+                    "html",
+                );
 
                 let content = utils::render_markdown(
-                    &content, link_filter, ctx.html_config.curly_quotes
+                    &content, Some(&link_filter), ctx.html_config.curly_quotes
                 );
 
                 print_content.push_str(&content);
 
-                // Update the context with data for this file
-                let path = ch.path
-                    .to_str()
-                    .chain_err(|| "Could not convert path to str")?;
-
                 // "print.html" is used for the print page.
-                if ch.path == Path::new("print.md") {
+                if ch.path == RelativePath::new("print.md") {
                     bail!(ErrorKind::ReservedFilenameError(ch.path.clone()));
                 };
 
@@ -89,23 +92,30 @@ impl HtmlHandlebars {
                     title = ch.name.clone() + " - " + book_title;
                 }
 
-                ctx.data.insert("path".to_owned(), json!(path));
+                let path_to_root = ch.path
+                    .relativize().components().skip(1).map(|_| "..").collect::<Vec<_>>();
+
+                let path_to_root = if path_to_root.is_empty() {
+                    ".".to_string()
+                } else {
+                    path_to_root.join("/")
+                };
+
+                ctx.data.insert("path".to_owned(), json!(ch.path));
                 ctx.data.insert("content".to_owned(), json!(content));
                 ctx.data.insert("chapter_title".to_owned(), json!(ch.name));
                 ctx.data.insert("title".to_owned(), json!(title));
-                ctx.data.insert("path_to_root".to_owned(),
-                                json!(utils::fs::path_to_root(&ch.path)));
+                ctx.data.insert("path_to_root".to_owned(), json!(path_to_root));
 
                 // Render the handlebars template with the data
                 debug!("Render template");
                 let rendered = ctx.handlebars.render("index", &ctx.data)?;
 
-                let filepath = Path::new(&ch.path).with_extension("html");
+                let filepath = ch.path.with_extension("html");
+
                 let rendered = self.post_process(
                     rendered,
-                    &normalize_path(filepath.to_str().ok_or_else(|| {
-                        Error::from(format!("Bad file name: {}", filepath.display()))
-                    })?),
+                    filepath.as_str(),
                     &ctx.html_config.playpen,
                 );
 
@@ -129,8 +139,9 @@ impl HtmlHandlebars {
 
         let mut content = String::new();
 
-        File::open(destination.join(&ch.path.with_extension("html")))?
-            .read_to_string(&mut content)?;
+        let path = ch.path.with_extension("html").to_path(destination);
+
+        File::open(&path)?.read_to_string(&mut content)?;
 
         // This could cause a problem when someone displays
         // code containing <base href=...>
@@ -142,10 +153,7 @@ impl HtmlHandlebars {
 
         self.write_file(destination, "index.html", content.as_bytes())?;
 
-        debug!(
-            "Creating index.html from {} ✓",
-            destination.join(&ch.path.with_extension("html")).display()
-        );
+        debug!("Creating index.html from {} ✓", path.display());
 
         Ok(())
     }
@@ -243,8 +251,7 @@ impl HtmlHandlebars {
         data.insert("is_print".to_owned(), json!(true));
         data.insert("path".to_owned(), json!("print.md"));
         data.insert("content".to_owned(), json!(print_content));
-        data.insert("path_to_root".to_owned(),
-                    json!(utils::fs::path_to_root(Path::new("print.md"))));
+        data.insert("path_to_root".to_owned(), json!("."));
     }
 
     fn register_hbs_helpers(&self, handlebars: &mut Handlebars, html_config: &HtmlConfig) {
@@ -323,6 +330,15 @@ impl Renderer for HtmlHandlebars {
         fs::create_dir_all(&destination)
             .chain_err(|| "Unexpected error when constructing destination path")?;
 
+        // valid link targets
+        let mut targets = HashSet::new();
+
+        for item in book.iter() {
+            if let BookItem::Chapter(ref ch) = *item {
+                targets.insert(ch.path.as_relative_path());
+            }
+        }
+
         for (i, item) in book.iter().enumerate() {
             let ctx = RenderItemContext {
                 handlebars: &handlebars,
@@ -331,7 +347,7 @@ impl Renderer for HtmlHandlebars {
                 is_index: i == 0,
                 html_config: html_config.clone(),
             };
-            self.render_item(&src_dir, item, ctx, &mut print_content)?;
+            self.render_item(item, &targets, ctx, &mut print_content)?;
         }
 
         // Print version
@@ -345,9 +361,7 @@ impl Renderer for HtmlHandlebars {
 
         let rendered = handlebars.render("index", &data)?;
 
-        let rendered = self.post_process(rendered,
-                                         "print.html",
-                                         &html_config.playpen);
+        let rendered = self.post_process(rendered, "print.html", &html_config.playpen);
 
         self.write_file(&destination, "print.html", &rendered.into_bytes())?;
         debug!("Creating print.html ✓");
@@ -444,10 +458,7 @@ fn make_data(root: &Path, book: &Book, config: &Config, html_config: &HtmlConfig
                 }
 
                 chapter.insert("name".to_owned(), json!(ch.name));
-                let path = ch.path
-                    .to_str()
-                    .chain_err(|| "Could not convert path to str")?;
-                chapter.insert("path".to_owned(), json!(path));
+                chapter.insert("path".to_owned(), json!(ch.path));
             }
             BookItem::Separator => {
                 chapter.insert("spacer".to_owned(), json!("_spacer_"));
@@ -638,13 +649,6 @@ struct RenderItemContext<'a> {
     data: serde_json::Map<String, serde_json::Value>,
     is_index: bool,
     html_config: HtmlConfig,
-}
-
-pub fn normalize_path(path: &str) -> String {
-    use std::path::is_separator;
-    path.chars()
-        .map(|ch| if is_separator(ch) { '/' } else { ch })
-        .collect::<String>()
 }
 
 pub fn normalize_id(content: &str) -> String {

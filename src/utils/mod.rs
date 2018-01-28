@@ -260,11 +260,16 @@ more text with spaces
 [foo](./baz.md)
 "#;
 
-            let expected = "<p><a href=\"./bar.html\">foo</a>\n<a href=\"./baz.md\">foo</a></p>\n";
+            let expected = "<p><a href=\"bar.html\">foo</a>\n<a href=\"./baz.md\">foo</a></p>\n";
 
             let bar = RelativePath::new("./bar.md");
 
-            let filter = ChangeExtLinkFilter::new(|path| path == bar, "md", "html");
+            let filter = ChangeExtLinkFilter::new(
+                RelativePath::new("."),
+                |path| path == bar,
+                "md",
+                "html"
+            );
 
             // only bar is a file.
             assert_eq!(render_markdown(input, Some(&filter), false), expected);
