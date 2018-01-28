@@ -31,11 +31,22 @@ impl<'a, F> LinkFilter for ChangeExtLinkFilter<'a, F>
 
         // Verify that specified URL is relative.
         if let Err(ParseError::RelativeUrlWithoutBase) = Url::parse(dest) {
-            let dest = RelativePath::new(dest);
+            // extract fragment.
+            let mut split = dest.splitn(2, '#');
 
-            if (self.is_dest)(dest) && Some(self.expected) == dest.extension() {
-                let dest = self.base.relativize_with(dest).with_extension(self.ext);
-                return Some(dest.display().to_string());
+            if let Some(base) = split.next() {
+                let dest = RelativePath::new(base);
+
+                if Some(self.expected) == dest.extension() && (self.is_dest)(dest) {
+                    let dest = self.base.relativize_with(dest).with_extension(self.ext);
+                    let dest = dest.display().to_string();
+
+                    if let Some(fragment) = split.next() {
+                        return Some(format!("{}#{}", dest, fragment));
+                    }
+
+                    return Some(dest);
+                }
             }
         }
 
